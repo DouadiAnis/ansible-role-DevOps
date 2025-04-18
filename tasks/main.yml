@@ -1,2 +1,137 @@
 ---
-# tasks file for ansible-role-DevOps
+- name: Update package cache
+  package:
+    update_cache: yes
+
+- name: Install required packages
+  package:
+    name: "{{ [apache_pkg] + php_pkgs + ['mariadb-server'] }}"
+    state: present
+
+- name: Start Apache service
+  block:
+    - name: Start Apache on Ubuntu/Debian
+      command: service apache2 start
+      when: ansible_os_family == 'Debian'
+
+    - name: Start Apache on Rocky/RedHat
+      shell: /usr/sbin/httpd -DFOREGROUND
+      async: 45
+      poll: 0
+      when: ansible_os_family == 'RedHat' or ansible_distribution == 'Rocky'
+
+- name: Start MariaDB/MySQL service
+  block:
+    - name: Start MariaDB/MySQL on Ubuntu/Debian
+      shell: mysqld_safe --datadir=/var/lib/mysql &
+      async: 60
+      poll: 0
+      when: ansible_os_family == 'Debian'
+
+    - name: Start MariaDB/MySQL on Rocky/RedHat
+      shell: mysqld_safe --datadir=/var/lib/mysql &
+      async: 60
+      poll: 0
+      when: ansible_os_family == 'RedHat' or ansible_distribution == 'Rocky'
+
+
+
+- name: Remove default index.html
+  file:
+    path: "{{ apache_web_root }}/index.html"
+    state: absent
+
+- name: Set MySQL root password
+  shell: |
+    mysql -e "ALTER USER 'root'@'localhost' IDENTIFIED BY '{{ wp_db_root_password }}';"
+  args:
+    creates: /root/.mysql_pw_set
+  register: root_pw
+  changed_when: "'ALTER USER' in root_pw.stdout"
+  notify: restart mariadb
+
+- name: Create marker file
+  file:
+    path: /root/.mysql_pw_set
+    state: touch
+
+- name: Secure MariaDB and create WordPress DB/user
+  shell: |
+    mysql -uroot -p{{ wp_db_root_password }} -e "DELETE FROM mysql.user WHERE User='';"
+    mysql -uroot -p{{ wp_db_root_password }} -e "DROP DATABASE IF EXISTS test;"
+    mysql -uroot -p{{ wp_db_root_password }} -e "DELETE FROM mysql.db WHERE Db='test' OR Db='test\\_%';"
+    mysql -uroot -p{{ wp_db_root_password }} -e "FLUSH PRIVILEGES;"
+    mysql -uroot -p{{ wp_db_root_password }} -e "CREATE DATABASE IF NOT EXISTS {{ wp_db_name }};"
+    mysql -uroot -p{{ wp_db_root_password }} -e "CREATE USER IF NOT EXISTS '{{ wp_db_user }}'@'localhost' IDENTIFIED BY '{{ wp_db_password }}';"
+    mysql -uroot -p{{ wp_db_root_password }} -e "GRANT ALL PRIVILEGES ON {{ wp_db_name }}.* TO '{{ wp_db_user }}'@'localhost';"
+    mysql -uroot -p{{ wp_db_root_password }} -e "FLUSH PRIVILEGES;"
+  notify: restart mariadb
+
+- name: Download WordPress
+  get_url:
+    url: https://wordpress.org/latest.zip
+    dest: /tmp/latest.zip
+
+- name: Unzip WordPress
+  unarchive:
+    src: /tmp/latest.zip
+    dest: "{{ apache_web_root }}"
+    remote_src: yes
+    creates: "{{ wordpress_install_dir }}/wp-config-sample.php"
+
+- name: Set permissions on WordPress files
+  file:
+    path: "{{ apache_web_root }}"
+    recurse: yes
+    owner: www-data
+    group: www-data
+    mode: "0755"
+
+- name: Create wp-config.php
+  copy:
+    dest: "{{ wordpress_install_dir }}/wp-config.php"
+    content: |
+      <?php
+      define( 'DB_NAME', '{{ wp_db_name }}' );
+      define( 'DB_USER', '{{ wp_db_user }}' );
+      define( 'DB_PASSWORD', '{{ wp_db_password }}' );
+      define( 'DB_HOST', 'localhost' );
+      define( 'DB_CHARSET', 'utf8' );
+      define( 'DB_COLLATE', '' );
+      $table_prefix = 'wp_';
+      define( 'WP_DEBUG', false );
+      if ( ! defined( 'ABSPATH' ) ) {
+        define( 'ABSPATH', __DIR__ . '/' );
+      }
+      require_once ABSPATH . 'wp-settings.php';
+    owner: www-data
+    group: www-data
+    mode: "0640"
+
+- name: Write Apache WordPress configuration
+  copy:
+    dest: "{{ apache_conf_path }}"
+    content: |
+      <VirtualHost *:{{ apache_port }}>
+        ServerAdmin admin@localhost
+        DocumentRoot {{ wordpress_install_dir }}
+        <Directory {{ wordpress_install_dir }}>
+          AllowOverride All
+        </Directory>
+        ErrorLog {{ apache_web_root }}/error.log
+        CustomLog {{ apache_web_root }}/access.log combined
+      </VirtualHost>
+  notify: reload apache
+
+- name: Enable Apache site (Debian only)
+  command: a2ensite wordpress.conf
+  when: ansible_os_family == 'Debian'
+  notify: reload apache
+
+- name: Enable mod_rewrite (Debian only)
+  command: a2enmod rewrite
+  when: ansible_os_family == 'Debian'
+  notify: reload apache
+
+- name: Force restart apache to apply everything
+  meta: flush_handlers

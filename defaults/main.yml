@@ -1,2 +1,6 @@
 ---
-# defaults file for ansible-role-DevOps
+wp_db_name: wordpress
+wp_db_user: example
+wp_db_password: examplePW
+wp_db_root_password: examplerootPW
+apache_port: 80

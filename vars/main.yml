@@ -1,2 +1,13 @@
 ---
-# vars file for ansible-role-DevOps
+apache_pkg: "{{ 'apache2' if ansible_os_family == 'Debian' else 'httpd' }}"
+php_pkgs:
+  - php
+  - "{{ 'libapache2-mod-php' if ansible_os_family == 'Debian' else 'php-mysqlnd' }}"
+  - "{{ 'php-mysql' if ansible_os_family == 'Debian' else 'php-mysqlnd' }}"
+  - wget
+  - unzip
+apache_conf_path: "{{ '/etc/apache2/sites-available/wordpress.conf' if ansible_os_family == 'Debian' else '/etc/httpd/conf.d/wordpress.conf' }}"
+apache_web_root: "/var/www/html"
+wordpress_install_dir: "/var/www/html/wordpress"
+
+mariadb_service: "{% if ansible_distribution == 'Ubuntu' %}mysql{% elif ansible_distribution == 'CentOS' or ansible_distribution == 'RedHat' or ansible_distribution == 'Rocky' %}mariadb{% elif ansible_os_family == 'Debian' %}mariadb{% else %}mariadb{% endif %}"
